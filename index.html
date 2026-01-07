@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Silent Bus Dashboard - Cupples (Live)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://alcdn.msauth.net/browser/2.37.0/js/msal-browser.min.js"></script>
+  <style>
+    body { font-family: system-ui, "Segoe UI", Arial; background:#f1f5f9; margin:20px; }
+    h1 { text-align:center; }
+    #board { display:flex; gap:16px; margin-top:12px; }
+    .column { flex:1; background:white; border-radius:10px; padding:12px; min-height:400px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+    .column h2 { text-align:center; }
+    .bus { background:#e6f0ff; margin:6px; padding:10px; border-radius:8px; cursor:grab; transition:transform 0.1s ease; }
+    .bus.dragging { opacity:0.5; transform:scale(1.05); }
+    button { padding:8px 16px; border:none; border-radius:6px; background:#2563eb; color:white; cursor:pointer; }
+    button:hover { background:#1e40af; }
+    #login { display:flex; justify-content:center; margin:20px; }
+    #enableSound { display:none; margin:10px auto; }
+
+    /* 🔄 Reset button styling */
+    #resetBoardBtn {
+      display:none;
+      margin:10px auto;
+      background-color:#c0392b;
+    }
+    #resetBoardBtn:hover {
+      background-color:#922b21;
+    }
+
+    /* 🔄 Loading overlay */
+    #loadingOverlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(241, 245, 249, 0.9);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5em;
+      color: #2563eb;
+      z-index: 1000;
+    }
+    .spinner {
+      border: 4px solid #e0e7ff;
+      border-top: 4px solid #2563eb;
+      border-radius: 50%;
+      width: 32px;
+      height: 32px;
+      margin-right: 10px;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+    /* Flash animation for new/updated buses */
+    @keyframes flash {
+      0% { background-color: #fff59d; }
+      100% { background-color: #e6f0ff; }
+    }
+    .flash { animation: flash 1s ease; }
+  </style>
+</head>
+
+<body>
+  <h1>Silent Bus Dashboard — Cupples (Live)</h1>
+  <div id="login"><button onclick="signIn()">Sign in with Microsoft</button></div>
+  <button id="enableSound">Enable Sound</button>
+  <button id="resetBoardBtn">🔄 Reset Board</button>
+
+  <div id="board" style="display:none;">
+    <div class="column" id="Not Here"><h2>🚍 Not Here</h2></div>
+    <div class="column" id="On Deck"><h2>⌚ On Deck</h2></div>
+    <div class="column" id="Here"><h2>✅ Here</h2></div>
+    <div class="column" id="Gone"><h2>🏁 Gone</h2></div>
+  </div>
+
+  <!-- 🎵 Sounds -->
+  <audio id="dingHere" src="https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg" preload="auto"></audio>
+  <audio id="dingOnDeck" src="https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg" preload="auto"></audio>
+
+  <!-- 🔄 Loading overlay -->
+  <div id="loadingOverlay">
+    <div class="spinner"></div>
+    <span>Refreshing bus list…</span>
+  </div>
+
+  <script>
+  const msalConfig = {
+    auth: {
+      clientId: "9fa63e7d-529b-4b31-aeba-240de53122e9",
+      authority: "https://login.microsoftonline.com/9c6c3caa-8f3d-4f3c-98f7-e4feea479b7d",
+      redirectUri: "https://aaleventhal-lev.github.io/silent-bus-dashboard-location2/"
+    },
+    cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
+  };
+  const msalInstance = new msal.PublicClientApplication(msalConfig);
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length > 0) msalInstance.setActiveAccount(accounts[0]);
+
+  let accessToken = null;
+  const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSouthStaffPortal";
+  const listName = "Silent Bus Admin List - South";
+  let previousStatuses = {};
+  let initialized = false;
+  let soundEnabled = false;
+
+  const dingHere = document.getElementById("dingHere");
+  const dingOnDeck = document.getElementById("dingOnDeck");
+  const enableSoundButton = document.getElementById("enableSound");
+  const resetButton = document.getElementById("resetBoardBtn");
+
+  enableSoundButton.addEventListener("click", () => {
+    soundEnabled = true;
+    enableSoundButton.style.display = "none";
+  });
+
+  function showLoading(show) { document.getElementById("loadingOverlay").style.display = show ? "flex" : "none"; }
+
+  async function signIn() {
+    try {
+      const loginResponse = await msalInstance.loginPopup({ scopes: ["User.Read", "Sites.Read.All", "Sites.FullControl.All"] });
+      msalInstance.setActiveAccount(loginResponse.account);
+      const account = msalInstance.getActiveAccount();
+      if (!account) throw new Error("No active account found after login");
+
+      const tokenResponse = await msalInstance.acquireTokenSilent({
+        scopes: ["https://thewatsoninstitute.sharepoint.com/.default"],
+        account
+      });
+
+      accessToken = tokenResponse.accessToken;
+      document.getElementById("login").style.display = "none";
+      enableSoundButton.style.display = "block"; 
+      document.getElementById("board").style.display = "flex";
+      resetButton.style.display = "block"; // ✅ Show Reset after login
+      await loadListData();
+
+    } catch (error) {
+      console.error("Login error:", error);
+    }
+  }
+
+  async function loadListData() {
+    if (!accessToken) return;
+    showLoading(true);
+    try {
+      const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status`;
+      const response = await fetch(endpoint, {
+        headers: { "Authorization": `Bearer ${accessToken}`, "Accept": "application/json;odata=nometadata" }
+      });
+      if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
+      const data = await response.json();
+      const buses = data.value.map(item => ({ id: item.Id, name: item.Title, status: item.Status || "Not Here" }));
+
+      if (initialized && soundEnabled) {
+        for (const bus of buses) {
+          const oldStatus = previousStatuses[bus.id];
+          const newStatus = bus.status;
+          if (oldStatus && oldStatus !== newStatus) {
+            if (newStatus === "Here") { dingHere.pause(); dingHere.currentTime = 0; dingHere.play().catch(()=>{}); }
+            if (newStatus === "On Deck") { dingOnDeck.pause(); dingOnDeck.currentTime = 0; dingOnDeck.play().catch(()=>{}); }
+          }
+        }
+      }
+
+      previousStatuses = {};
+      for (const bus of buses) previousStatuses[bus.id] = bus.status;
+
+      initialized = true;
+      render(buses);
+    } catch (error) { console.error("Error loading list data:", error); }
+    finally { showLoading(false); }
+  }
+
+  function render(buses) {
+    ["Not Here","On Deck","Here","Gone"].forEach(status => {
+      const col = document.getElementById(status);
+      col.querySelectorAll(".bus").forEach(b => b.remove());
+      buses.filter(b => b.status===status).forEach(bus => {
+        const div = document.createElement("div");
+        div.className = "bus";
+        div.textContent = bus.name;
+        div.draggable = true;
+        div.dataset.id = bus.id;
+
+        const oldStatus = previousStatuses[bus.id];
+        if(initialized && oldStatus && oldStatus !== bus.status){
+          div.classList.add("flash");
+          div.addEventListener("animationend",()=>div.classList.remove("flash"));
+        }
+
+        div.addEventListener("dragstart", e => { e.dataTransfer.setData("text/plain", bus.id); div.classList.add("dragging"); });
+        div.addEventListener("dragend", () => div.classList.remove("dragging"));
+        col.appendChild(div);
+      });
+    });
+
+    document.querySelectorAll(".column").forEach(col => {
+      col.ondragover = e => e.preventDefault();
+      col.ondrop = async e => {
+        e.preventDefault();
+        const id = e.dataTransfer.getData("text/plain");
+        const bus = buses.find(b => b.id == id);
+        if (bus.status === col.id) return;
+        bus.status = col.id;
+        render(buses);
+        if(soundEnabled){
+          if(bus.status === "Here") { dingHere.pause(); dingHere.currentTime=0; dingHere.play().catch(()=>{}); }
+          if(bus.status === "On Deck") { dingOnDeck.pause(); dingOnDeck.currentTime=0; dingOnDeck.play().catch(()=>{}); }
+        }
+        await updateListItem(bus);
+        await loadListData();
+      };
+    });
+  }
+
+  async function updateListItem(bus) {
+    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items(${bus.id})`;
+    const response = await fetch(endpoint, {
+      method:"PATCH",
+      headers:{
+        "Authorization":`Bearer ${accessToken}`,
+        "Accept":"application/json;odata=nometadata",
+        "Content-Type":"application/json;odata=nometadata",
+        "IF-MATCH":"*"
+      },
+      body: JSON.stringify({Status: bus.status})
+    });
+    if(!response.ok) console.error("Update failed:", await response.text());
+  }
+
+  setInterval(async ()=>{
+    const account = msalInstance.getActiveAccount();
+    if(account && accessToken) await loadListData();
+  }, 15000);
+
+  /* ✅ SIMPLIFIED RESET BOARD FUNCTION */
+  resetButton.addEventListener("click", async () => {
+    if (!confirm("Are you sure you want to reset all buses to 'Not Here'?")) return;
+    try {
+      showLoading(true);
+      const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id`;
+      const response = await fetch(endpoint, {
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Accept": "application/json;odata=nometadata"
+        }
+      });
+      const data = await response.json();
+      const buses = data.value;
+
+      for (const bus of buses) {
+        const updateEndpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items(${bus.Id})`;
+        const updateResponse = await fetch(updateEndpoint, {
+          method: "PATCH",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Accept": "application/json;odata=nometadata",
+            "Content-Type": "application/json;odata=nometadata",
+            "IF-MATCH": "*"
+          },
+          body: JSON.stringify({ Status: "Not Here" })
+        });
+        if (!updateResponse.ok) console.warn(`Failed to reset bus ${bus.Id}`);
+      }
+
+      alert("✅ All buses have been reset to 'Not Here'.");
+      window.location.reload();
+    } catch (error) {
+      console.error("Error resetting board:", error);
+      alert("❌ Something went wrong while resetting the board. Check console for details.");
+    } finally {
+      showLoading(false);
+    }
+  });
+  </script>
+</body>
+</html>
