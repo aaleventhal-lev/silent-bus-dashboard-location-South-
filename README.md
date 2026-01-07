@@ -1,0 +1,1 @@
+This dashbaord serves as an identical replica of the silent bus dashboard used at Location 1. It consists of 4 columns, each representing the status of arrival and departure of student buses at the beginning and end of the school day.
