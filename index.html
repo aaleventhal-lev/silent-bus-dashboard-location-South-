@@ -11,8 +11,19 @@
     #board { display:flex; gap:16px; margin-top:12px; }
     .column { flex:1; background:white; border-radius:10px; padding:12px; min-height:400px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
     .column h2 { text-align:center; }
-    .bus { background:#e6f0ff; margin:6px; padding:10px; border-radius:8px; cursor:grab; transition:transform 0.1s ease; }
+
+    /* Bus tile */
+    .bus {
+      background:#e6f0ff; /* will be overridden by wing styling */
+      margin:6px;
+      padding:10px;
+      border-radius:8px;
+      cursor:grab;
+      transition:transform 0.1s ease;
+      border-left: 10px solid transparent; /* wing color border */
+    }
     .bus.dragging { opacity:0.5; transform:scale(1.05); }
+
     button { padding:8px 16px; border:none; border-radius:6px; background:#2563eb; color:white; cursor:pointer; }
     button:hover { background:#1e40af; }
     #login { display:flex; justify-content:center; margin:20px; }
@@ -108,6 +119,21 @@
   const enableSoundButton = document.getElementById("enableSound");
   const resetButton = document.getElementById("resetBoardBtn");
 
+  // ✅ Wing color-coding (based on SharePoint choice values)
+  const wingStyles = {
+    "Front":      { bg: "#DBEAFE", border: "#2563EB" }, // light blue
+    "B Wing":     { bg: "#DCFCE7", border: "#16A34A" }, // light green
+    "C Wing":     { bg: "#FEE2E2", border: "#DC2626" }, // light red
+    "Staff Cafe": { bg: "#FEF9C3", border: "#CA8A04" }, // light yellow
+    "Unassigned": { bg: "#E5E7EB", border: "#6B7280" }  // gray
+  };
+
+  function applyWingStyle(div, wing) {
+    const style = wingStyles[wing] || wingStyles["Unassigned"];
+    div.style.background = style.bg;
+    div.style.borderLeft = `10px solid ${style.border}`;
+  }
+
   enableSoundButton.addEventListener("click", () => {
     soundEnabled = true;
     enableSoundButton.style.display = "none";
@@ -129,7 +155,7 @@
 
       accessToken = tokenResponse.accessToken;
       document.getElementById("login").style.display = "none";
-      enableSoundButton.style.display = "block"; 
+      enableSoundButton.style.display = "block";
       document.getElementById("board").style.display = "flex";
       resetButton.style.display = "block"; // ✅ Show Reset after login
       await loadListData();
@@ -143,13 +169,21 @@
     if (!accessToken) return;
     showLoading(true);
     try {
-      const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status`;
+      // ✅ Added Wing to $select
+      const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status,Wing`;
       const response = await fetch(endpoint, {
         headers: { "Authorization": `Bearer ${accessToken}`, "Accept": "application/json;odata=nometadata" }
       });
       if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
       const data = await response.json();
-      const buses = data.value.map(item => ({ id: item.Id, name: item.Title, status: item.Status || "Not Here" }));
+
+      // ✅ Added wing field
+      const buses = data.value.map(item => ({
+        id: item.Id,
+        name: item.Title,
+        status: item.Status || "Not Here",
+        wing: item.Wing || "Unassigned"
+      }));
 
       if (initialized && soundEnabled) {
         for (const bus of buses) {
@@ -175,21 +209,43 @@
     ["Not Here","On Deck","Here","Gone"].forEach(status => {
       const col = document.getElementById(status);
       col.querySelectorAll(".bus").forEach(b => b.remove());
+
       buses.filter(b => b.status===status).forEach(bus => {
         const div = document.createElement("div");
         div.className = "bus";
-        div.textContent = bus.name;
         div.draggable = true;
         div.dataset.id = bus.id;
 
+        // ✅ Apply wing background + border
+        applyWingStyle(div, bus.wing);
+
+        // ✅ Display bus name + wing pill tag
+        div.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+            <span>${bus.name}</span>
+            <span style="
+              font-size: 0.8em;
+              padding: 2px 8px;
+              border-radius: 999px;
+              background: rgba(255,255,255,0.65);
+              border: 1px solid rgba(0,0,0,0.10);
+              white-space: nowrap;
+            ">${bus.wing}</span>
+          </div>
+        `;
+
         const oldStatus = previousStatuses[bus.id];
-        if(initialized && oldStatus && oldStatus !== bus.status){
+        if (initialized && oldStatus && oldStatus !== bus.status) {
           div.classList.add("flash");
-          div.addEventListener("animationend",()=>div.classList.remove("flash"));
+          div.addEventListener("animationend", () => div.classList.remove("flash"));
         }
 
-        div.addEventListener("dragstart", e => { e.dataTransfer.setData("text/plain", bus.id); div.classList.add("dragging"); });
+        div.addEventListener("dragstart", e => {
+          e.dataTransfer.setData("text/plain", bus.id);
+          div.classList.add("dragging");
+        });
         div.addEventListener("dragend", () => div.classList.remove("dragging"));
+
         col.appendChild(div);
       });
     });
@@ -203,10 +259,12 @@
         if (bus.status === col.id) return;
         bus.status = col.id;
         render(buses);
-        if(soundEnabled){
-          if(bus.status === "Here") { dingHere.pause(); dingHere.currentTime=0; dingHere.play().catch(()=>{}); }
-          if(bus.status === "On Deck") { dingOnDeck.pause(); dingOnDeck.currentTime=0; dingOnDeck.play().catch(()=>{}); }
+
+        if (soundEnabled) {
+          if (bus.status === "Here") { dingHere.pause(); dingHere.currentTime=0; dingHere.play().catch(()=>{}); }
+          if (bus.status === "On Deck") { dingOnDeck.pause(); dingOnDeck.currentTime=0; dingOnDeck.play().catch(()=>{}); }
         }
+
         await updateListItem(bus);
         await loadListData();
       };
