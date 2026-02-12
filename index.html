@@ -12,6 +12,28 @@
     .column { flex:1; background:white; border-radius:10px; padding:12px; min-height:400px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
     .column h2 { text-align:center; }
 
+    /* ✅ Wing grouping containers */
+    .wing-group {
+      margin: 10px 0;
+      padding: 8px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.7);
+      border: 1px solid rgba(0,0,0,0.06);
+    }
+    .wing-group-title {
+      font-size: 0.85em;
+      font-weight: 700;
+      margin: 0 0 6px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      opacity: 0.85;
+    }
+    .wing-buslist {
+      min-height: 10px; /* makes drops easier */
+    }
+
     /* Bus tile */
     .bus {
       background:#e6f0ff; /* will be overridden by wing styling */
@@ -134,6 +156,13 @@
     div.style.borderLeft = `10px solid ${style.border}`;
   }
 
+  // ✅ Wing ordering for grouping
+  const wingOrder = ["Front", "B Wing", "C Wing", "Staff Cafe", "Unassigned"];
+  function wingRank(wing) {
+    const idx = wingOrder.indexOf(wing);
+    return idx === -1 ? 999 : idx;
+  }
+
   enableSoundButton.addEventListener("click", () => {
     soundEnabled = true;
     enableSoundButton.style.display = "none";
@@ -169,7 +198,6 @@
     if (!accessToken) return;
     showLoading(true);
     try {
-      // ✅ Added Wing to $select
       const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status,Wing`;
       const response = await fetch(endpoint, {
         headers: { "Authorization": `Bearer ${accessToken}`, "Accept": "application/json;odata=nometadata" }
@@ -177,7 +205,6 @@
       if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
       const data = await response.json();
 
-      // ✅ Added wing field
       const buses = data.value.map(item => ({
         id: item.Id,
         name: item.Title,
@@ -206,20 +233,62 @@
   }
 
   function render(buses) {
-    ["Not Here","On Deck","Here","Gone"].forEach(status => {
-      const col = document.getElementById(status);
-      col.querySelectorAll(".bus").forEach(b => b.remove());
+    const statuses = ["Not Here","On Deck","Here","Gone"];
 
-      buses.filter(b => b.status===status).forEach(bus => {
+    statuses.forEach(status => {
+      const col = document.getElementById(status);
+
+      // Remove old buses AND old wing groups
+      col.querySelectorAll(".bus").forEach(b => b.remove());
+      col.querySelectorAll(".wing-group").forEach(g => g.remove());
+
+      const inThisStatus = buses.filter(b => b.status === status);
+
+      // Collect wings present in this status and sort by desired order
+      const wings = [...new Set(inThisStatus.map(b => b.wing || "Unassigned"))]
+        .sort((a,b) => wingRank(a) - wingRank(b) || a.localeCompare(b));
+
+      // Build wing sections
+      const wingContainers = {};
+      wings.forEach(wing => {
+        const group = document.createElement("div");
+        group.className = "wing-group";
+
+        const title = document.createElement("div");
+        title.className = "wing-group-title";
+        title.innerHTML = `<span>${wing}</span><span style="font-weight:600; opacity:0.7;">${inThisStatus.filter(x => x.wing === wing).length}</span>`;
+
+        const list = document.createElement("div");
+        list.className = "wing-buslist";
+        // helpful for drop handling
+        list.dataset.status = status;
+
+        group.appendChild(title);
+        group.appendChild(list);
+        col.appendChild(group);
+
+        wingContainers[wing] = list;
+      });
+
+      // If no wings (no buses), nothing else to do
+      if (wings.length === 0) return;
+
+      // Sort buses within status by wing order then name
+      const sorted = inThisStatus.slice().sort((a,b) => {
+        const wr = wingRank(a.wing) - wingRank(b.wing);
+        if (wr !== 0) return wr;
+        return (a.name || "").localeCompare(b.name || "");
+      });
+
+      // Render each bus into its wing group
+      sorted.forEach(bus => {
         const div = document.createElement("div");
         div.className = "bus";
         div.draggable = true;
         div.dataset.id = bus.id;
 
-        // ✅ Apply wing background + border
         applyWingStyle(div, bus.wing);
 
-        // ✅ Display bus name + wing pill tag
         div.innerHTML = `
           <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
             <span>${bus.name}</span>
@@ -246,18 +315,35 @@
         });
         div.addEventListener("dragend", () => div.classList.remove("dragging"));
 
-        col.appendChild(div);
+        const targetList = wingContainers[bus.wing] || wingContainers["Unassigned"] || col;
+        targetList.appendChild(div);
       });
     });
 
-    document.querySelectorAll(".column").forEach(col => {
-      col.ondragover = e => e.preventDefault();
-      col.ondrop = async e => {
+    // Drop handling: allow dropping on the column OR on a wing list
+    const dropTargets = [
+      ...document.querySelectorAll(".column"),
+      ...document.querySelectorAll(".wing-buslist")
+    ];
+
+    dropTargets.forEach(target => {
+      target.ondragover = e => e.preventDefault();
+      target.ondrop = async e => {
         e.preventDefault();
         const id = e.dataTransfer.getData("text/plain");
         const bus = buses.find(b => b.id == id);
-        if (bus.status === col.id) return;
-        bus.status = col.id;
+        if (!bus) return;
+
+        // Find the status column we dropped into (even if dropped on wing list)
+        const colEl = e.currentTarget.classList.contains("column")
+          ? e.currentTarget
+          : e.currentTarget.closest(".column");
+
+        if (!colEl) return;
+
+        if (bus.status === colEl.id) return;
+
+        bus.status = colEl.id;
         render(buses);
 
         if (soundEnabled) {
