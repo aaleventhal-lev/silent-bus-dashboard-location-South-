@@ -7,12 +7,65 @@
   <script src="https://alcdn.msauth.net/browser/2.37.0/js/msal-browser.min.js"></script>
   <style>
     body { font-family: system-ui, "Segoe UI", Arial; background:#f1f5f9; margin:20px; }
-    h1 { text-align:center; }
-    #board { display:flex; gap:16px; margin-top:12px; }
-    .column { flex:1; background:white; border-radius:10px; padding:12px; min-height:400px; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+    h1 { text-align:center; margin: 6px 0 10px; }
+
+    /* Status banner */
+    #statusBar {
+      display:none;
+      margin: 0 auto 12px;
+      max-width: 1200px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #e2e8f0;
+      background: #ffffff;
+      color: #0f172a;
+      box-shadow:0 1px 4px rgba(0,0,0,0.06);
+      font-size: 0.95em;
+      line-height: 1.25;
+    }
+    #statusBar .row { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+    #statusPill {
+      display:inline-block;
+      font-weight:700;
+      padding:4px 10px;
+      border-radius:999px;
+      background:#e2e8f0;
+      color:#0f172a;
+      font-size: 0.9em;
+    }
+    #statusMsg { color:#334155; }
+    #retryBtn {
+      display:none;
+      padding:6px 10px;
+      border:none;
+      border-radius:8px;
+      background:#2563eb;
+      color:white;
+      cursor:pointer;
+      font-weight:600;
+    }
+    #retryBtn:hover { background:#1e40af; }
+
+    #board {
+      display:flex;
+      gap:16px;
+      margin-top:12px;
+      max-width: 1400px;
+      margin-left:auto;
+      margin-right:auto;
+    }
+
+    .column {
+      flex:1;
+      background:white;
+      border-radius:10px;
+      padding:12px;
+      min-height:400px;
+      box-shadow:0 1px 4px rgba(0,0,0,0.08);
+    }
     .column h2 { text-align:center; }
 
-    /* ✅ Wing grouping containers */
+    /* Wing grouping containers */
     .wing-group {
       margin: 10px 0;
       padding: 8px;
@@ -31,47 +84,53 @@
       opacity: 0.85;
     }
     .wing-buslist {
-      min-height: 10px; /* makes drops easier */
+      min-height: 10px;
     }
 
     /* Bus tile */
     .bus {
-      background:#e6f0ff; /* will be overridden by wing styling */
+      background:#e6f0ff;
       margin:6px;
       padding:10px;
       border-radius:8px;
       cursor:grab;
       transition:transform 0.1s ease;
-      border-left: 10px solid transparent; /* wing color border */
+      border-left: 10px solid transparent;
+      user-select:none;
     }
     .bus.dragging { opacity:0.5; transform:scale(1.05); }
+
+    /* Pending (not saved yet) */
+    .bus.pending {
+      outline: 2px dashed #f59e0b;
+      outline-offset: 2px;
+    }
 
     button { padding:8px 16px; border:none; border-radius:6px; background:#2563eb; color:white; cursor:pointer; }
     button:hover { background:#1e40af; }
     #login { display:flex; justify-content:center; margin:20px; }
     #enableSound { display:none; margin:10px auto; }
 
-    /* 🔄 Reset button styling */
+    /* Reset button */
     #resetBoardBtn {
       display:none;
       margin:10px auto;
       background-color:#c0392b;
     }
-    #resetBoardBtn:hover {
-      background-color:#922b21;
-    }
+    #resetBoardBtn:hover { background-color:#922b21; }
 
-    /* 🔄 Loading overlay */
+    /* Loading overlay */
     #loadingOverlay {
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(241, 245, 249, 0.9);
+      background: rgba(241, 245, 249, 0.85);
       display: none;
       align-items: center;
       justify-content: center;
-      font-size: 1.5em;
+      font-size: 1.2em;
       color: #2563eb;
       z-index: 1000;
+      pointer-events: none;
     }
     .spinner {
       border: 4px solid #e0e7ff;
@@ -87,15 +146,26 @@
     /* Flash animation for new/updated buses */
     @keyframes flash {
       0% { background-color: #fff59d; }
-      100% { background-color: #e6f0ff; }
+      100% { background-color: inherit; }
     }
-    .flash { animation: flash 1s ease; }
+    .flash { animation: flash 0.9s ease; }
   </style>
 </head>
 
 <body>
   <h1>Silent Bus Dashboard — Ed Center South (Live)</h1>
-  <div id="login"><button onclick="signIn()">Sign in with Microsoft</button></div>
+
+  <div id="statusBar">
+    <div class="row">
+      <div>
+        <span id="statusPill">Status</span>
+        <span id="statusMsg"></span>
+      </div>
+      <button id="retryBtn" onclick="manualRetry()">Retry pending saves</button>
+    </div>
+  </div>
+
+  <div id="login"><button id="signInBtn" onclick="signIn()">Sign in with Microsoft</button></div>
   <button id="enableSound">Enable Sound</button>
   <button id="resetBoardBtn">🔄 Reset Board</button>
 
@@ -106,17 +176,20 @@
     <div class="column" id="Gone"><h2>🏁 Gone</h2></div>
   </div>
 
-  <!-- 🎵 Sounds -->
+  <!-- Sounds -->
   <audio id="dingHere" src="https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg" preload="auto"></audio>
   <audio id="dingOnDeck" src="https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg" preload="auto"></audio>
 
-  <!-- 🔄 Loading overlay -->
+  <!-- Loading overlay -->
   <div id="loadingOverlay">
     <div class="spinner"></div>
-    <span>Refreshing bus list…</span>
+    <span>Refreshing…</span>
   </div>
 
   <script>
+  /***************
+   * CONFIG
+   ***************/
   const msalConfig = {
     auth: {
       clientId: "9fa63e7d-529b-4b31-aeba-240de53122e9",
@@ -125,30 +198,26 @@
     },
     cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
   };
-  const msalInstance = new msal.PublicClientApplication(msalConfig);
-  const accounts = msalInstance.getAllAccounts();
-  if (accounts.length > 0) msalInstance.setActiveAccount(accounts[0]);
 
-  let accessToken = null;
   const siteUrl = "https://thewatsoninstitute.sharepoint.com/sites/EdCenterSouthStaffPortal";
   const listName = "Silent Bus Admin List - South";
-  let previousStatuses = {};
-  let initialized = false;
-  let soundEnabled = false;
 
-  const dingHere = document.getElementById("dingHere");
-  const dingOnDeck = document.getElementById("dingOnDeck");
-  const enableSoundButton = document.getElementById("enableSound");
-  const resetButton = document.getElementById("resetBoardBtn");
-
-  // ✅ Wing color-coding (based on SharePoint choice values)
+  /***************
+   * SOUTH-SPECIFIC WINGS
+   ***************/
   const wingStyles = {
-    "Front":      { bg: "#DBEAFE", border: "#2563EB" }, // light blue
-    "B Wing":     { bg: "#DCFCE7", border: "#16A34A" }, // light green
-    "C Wing":     { bg: "#FEE2E2", border: "#DC2626" }, // light red
-    "Staff Cafe": { bg: "#FEF9C3", border: "#CA8A04" }, // light yellow
-    "Unassigned": { bg: "#E5E7EB", border: "#6B7280" }  // gray
+    "Front":      { bg: "#DBEAFE", border: "#2563EB" },
+    "B Wing":     { bg: "#DCFCE7", border: "#16A34A" },
+    "C Wing":     { bg: "#FEE2E2", border: "#DC2626" },
+    "Staff Cafe": { bg: "#FEF9C3", border: "#CA8A04" },
+    "Unassigned": { bg: "#E5E7EB", border: "#6B7280" }
   };
+
+  const wingOrder = ["Front", "B Wing", "C Wing", "Staff Cafe", "Unassigned"];
+  function wingRank(wing) {
+    const idx = wingOrder.indexOf(wing);
+    return idx === -1 ? 999 : idx;
+  }
 
   function applyWingStyle(div, wing) {
     const style = wingStyles[wing] || wingStyles["Unassigned"];
@@ -156,23 +225,115 @@
     div.style.borderLeft = `10px solid ${style.border}`;
   }
 
-  // ✅ Wing ordering for grouping
-  const wingOrder = ["Front", "B Wing", "C Wing", "Staff Cafe", "Unassigned"];
-  function wingRank(wing) {
-    const idx = wingOrder.indexOf(wing);
-    return idx === -1 ? 999 : idx;
+  /***************
+   * STATE
+   ***************/
+  const msalInstance = new msal.PublicClientApplication(msalConfig);
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length > 0) msalInstance.setActiveAccount(accounts[0]);
+
+  let accessToken = null;
+  let soundEnabled = false;
+  let initialized = false;
+
+  let previousStatuses = {};
+  let busesState = [];
+
+  let isSaving = false;
+  let offline = false;
+  let pollTimer = null;
+  let backoffMs = 15000;
+  const BACKOFF_MIN = 15000;
+  const BACKOFF_MAX = 60000;
+
+  const pendingSaves = new Map();
+
+  /***************
+   * ELEMENTS
+   ***************/
+  const dingHere = document.getElementById("dingHere");
+  const dingOnDeck = document.getElementById("dingOnDeck");
+  const enableSoundButton = document.getElementById("enableSound");
+  const resetButton = document.getElementById("resetBoardBtn");
+
+  const statusBar = document.getElementById("statusBar");
+  const statusPill = document.getElementById("statusPill");
+  const statusMsg = document.getElementById("statusMsg");
+  const retryBtn = document.getElementById("retryBtn");
+
+  /***************
+   * UI HELPERS
+   ***************/
+  function showLoading(show, text="Refreshing…") {
+    const overlay = document.getElementById("loadingOverlay");
+    overlay.querySelector("span").textContent = text;
+    overlay.style.display = show ? "flex" : "none";
   }
 
-  enableSoundButton.addEventListener("click", () => {
+  function setStatus(kind, msg, showRetry=false) {
+    statusBar.style.display = "block";
+    statusMsg.textContent = msg || "";
+
+    if (kind === "ok") {
+      statusPill.textContent = "Online";
+      statusPill.style.background = "#DCFCE7";
+      statusPill.style.color = "#14532d";
+    } else if (kind === "saving") {
+      statusPill.textContent = "Saving…";
+      statusPill.style.background = "#DBEAFE";
+      statusPill.style.color = "#1e3a8a";
+    } else if (kind === "offline") {
+      statusPill.textContent = "Offline";
+      statusPill.style.background = "#FEE2E2";
+      statusPill.style.color = "#7f1d1d";
+    } else {
+      statusPill.textContent = "Notice";
+      statusPill.style.background = "#FEF3C7";
+      statusPill.style.color = "#78350f";
+    }
+
+    retryBtn.style.display = showRetry ? "inline-block" : "none";
+  }
+
+  function clearStatusIfClean() {
+    if (!offline && !isSaving && pendingSaves.size === 0) {
+      statusBar.style.display = "none";
+    }
+  }
+
+  /***************
+   * AUDIO
+   ***************/
+  enableSoundButton.addEventListener("click", async () => {
     soundEnabled = true;
     enableSoundButton.style.display = "none";
+
+    try {
+      dingHere.pause();
+      dingHere.currentTime = 0;
+      await dingHere.play();
+      dingHere.pause();
+      dingHere.currentTime = 0;
+
+      dingOnDeck.pause();
+      dingOnDeck.currentTime = 0;
+      await dingOnDeck.play();
+      dingOnDeck.pause();
+      dingOnDeck.currentTime = 0;
+    } catch (err) {
+      console.warn("Audio prime failed:", err);
+    }
   });
 
-  function showLoading(show) { document.getElementById("loadingOverlay").style.display = show ? "flex" : "none"; }
-
+  /***************
+   * AUTH
+   ***************/
   async function signIn() {
     try {
-      const loginResponse = await msalInstance.loginPopup({ scopes: ["User.Read", "Sites.Read.All", "Sites.FullControl.All"] });
+      const loginResponse = await msalInstance.loginPopup({
+        scopes: ["User.Read", "Sites.Read.All", "Sites.FullControl.All"]
+      });
+
       msalInstance.setActiveAccount(loginResponse.account);
       const account = msalInstance.getActiveAccount();
       if (!account) throw new Error("No active account found after login");
@@ -183,72 +344,159 @@
       });
 
       accessToken = tokenResponse.accessToken;
+
       document.getElementById("login").style.display = "none";
       enableSoundButton.style.display = "block";
       document.getElementById("board").style.display = "flex";
-      resetButton.style.display = "block"; // ✅ Show Reset after login
-      await loadListData();
+      resetButton.style.display = "block";
+
+      setStatus("ok", "Connected.");
+      await refreshNow(true);
+      startPolling();
 
     } catch (error) {
       console.error("Login error:", error);
+      alert("Login failed. Open console (F12) for details.");
     }
   }
 
-  async function loadListData() {
-    if (!accessToken) return;
-    showLoading(true);
-    try {
-      const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status,Wing`;
-      const response = await fetch(endpoint, {
-        headers: { "Authorization": `Bearer ${accessToken}`, "Accept": "application/json;odata=nometadata" }
-      });
-      if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
-      const data = await response.json();
+  /***************
+   * POLLING + BACKOFF
+   ***************/
+  function startPolling() {
+    stopPolling();
+    pollTimer = setInterval(async () => {
+      if (!accessToken) return;
+      if (isSaving) return;
+      await refreshNow(false);
+    }, backoffMs);
+  }
 
-      const buses = data.value.map(item => ({
-        id: item.Id,
-        name: item.Title,
-        status: item.Status || "Not Here",
-        wing: item.Wing || "Unassigned"
-      }));
+  function stopPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  function bumpBackoffOnFailure() {
+    backoffMs = Math.min(BACKOFF_MAX, Math.max(BACKOFF_MIN, Math.floor(backoffMs * 1.8)));
+    startPolling();
+  }
+
+  function resetBackoffOnSuccess() {
+    backoffMs = BACKOFF_MIN;
+    startPolling();
+  }
+
+  /***************
+   * DATA LOADING
+   ***************/
+  async function fetchBusesFromSharePoint() {
+    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id,Title,Status,Wing,Modified`;
+    const response = await fetch(endpoint, {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Accept": "application/json;odata=nometadata"
+      }
+    });
+    if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
+    const data = await response.json();
+
+    return data.value.map(item => ({
+      id: item.Id,
+      name: item.Title,
+      status: item.Status || "Not Here",
+      wing: item.Wing || "Unassigned",
+      modified: item.Modified ? new Date(item.Modified).getTime() : 0
+    }));
+  }
+
+  async function refreshNow(showOverlay) {
+    if (!accessToken) return;
+    if (isSaving) return;
+
+    if (showOverlay) showLoading(true, "Refreshing bus list…");
+    try {
+      const buses = await fetchBusesFromSharePoint();
+
+      offline = false;
+      resetBackoffOnSuccess();
+
+      if (pendingSaves.size > 0) {
+        setStatus("warn", `Reconnected. ${pendingSaves.size} unsaved change(s) pending — retrying…`, true);
+
+        previousStatuses = {};
+        for (const b of buses) previousStatuses[b.id] = b.status;
+        initialized = true;
+
+        await retryPendingSaves();
+
+        if (pendingSaves.size === 0) {
+          busesState = buses;
+          render(busesState, previousStatuses);
+          setStatus("ok", "Re-synced with SharePoint.");
+          setTimeout(clearStatusIfClean, 1500);
+        }
+        return;
+      }
+
+      busesState = buses;
+      const oldMap = { ...previousStatuses };
 
       if (initialized && soundEnabled) {
-        for (const bus of buses) {
-          const oldStatus = previousStatuses[bus.id];
+        for (const bus of busesState) {
+          const oldStatus = oldMap[bus.id];
           const newStatus = bus.status;
           if (oldStatus && oldStatus !== newStatus) {
-            if (newStatus === "Here") { dingHere.pause(); dingHere.currentTime = 0; dingHere.play().catch(()=>{}); }
-            if (newStatus === "On Deck") { dingOnDeck.pause(); dingOnDeck.currentTime = 0; dingOnDeck.play().catch(()=>{}); }
+            if (newStatus === "Here") {
+              dingHere.pause();
+              dingHere.currentTime = 0;
+              dingHere.play().catch(()=>{});
+            }
+            if (newStatus === "On Deck") {
+              dingOnDeck.pause();
+              dingOnDeck.currentTime = 0;
+              dingOnDeck.play().catch(()=>{});
+            }
           }
         }
       }
 
       previousStatuses = {};
-      for (const bus of buses) previousStatuses[bus.id] = bus.status;
+      for (const b of busesState) previousStatuses[b.id] = b.status;
 
       initialized = true;
-      render(buses);
-    } catch (error) { console.error("Error loading list data:", error); }
-    finally { showLoading(false); }
+      render(busesState, oldMap);
+
+      setStatus("ok", "Connected.");
+      setTimeout(clearStatusIfClean, 1200);
+
+    } catch (err) {
+      console.warn("Refresh failed:", err);
+      offline = true;
+      setStatus("offline", `Connection issue — showing last known board. Will retry in ~${Math.round(backoffMs/1000)}s.`, pendingSaves.size > 0);
+      bumpBackoffOnFailure();
+    } finally {
+      if (showOverlay) showLoading(false);
+    }
   }
 
-  function render(buses) {
+  /***************
+   * RENDER
+   ***************/
+  function render(buses, oldMap = {}) {
     const statuses = ["Not Here","On Deck","Here","Gone"];
 
     statuses.forEach(status => {
       const col = document.getElementById(status);
 
-      // Remove old buses AND old wing groups
       col.querySelectorAll(".bus").forEach(b => b.remove());
       col.querySelectorAll(".wing-group").forEach(g => g.remove());
 
       const inThisStatus = buses.filter(b => b.status === status);
 
-      // Collect wings present in this status and sort by desired order
       const wings = [...new Set(inThisStatus.map(b => b.wing || "Unassigned"))]
         .sort((a,b) => wingRank(a) - wingRank(b) || a.localeCompare(b));
 
-      // Build wing sections
       const wingContainers = {};
       wings.forEach(wing => {
         const group = document.createElement("div");
@@ -260,7 +508,6 @@
 
         const list = document.createElement("div");
         list.className = "wing-buslist";
-        // helpful for drop handling
         list.dataset.status = status;
 
         group.appendChild(title);
@@ -270,17 +517,23 @@
         wingContainers[wing] = list;
       });
 
-      // If no wings (no buses), nothing else to do
       if (wings.length === 0) return;
 
-      // Sort buses within status by wing order then name
       const sorted = inThisStatus.slice().sort((a,b) => {
         const wr = wingRank(a.wing) - wingRank(b.wing);
         if (wr !== 0) return wr;
-        return (a.name || "").localeCompare(b.name || "");
+
+        if (status === "Here" || status === "On Deck") {
+          const modDiff = (b.modified || 0) - (a.modified || 0);
+          if (modDiff !== 0) return modDiff;
+        }
+
+        return (a.name || "").localeCompare(b.name || "", undefined, {
+          numeric: true,
+          sensitivity: "base"
+        });
       });
 
-      // Render each bus into its wing group
       sorted.forEach(bus => {
         const div = document.createElement("div");
         div.className = "bus";
@@ -288,6 +541,10 @@
         div.dataset.id = bus.id;
 
         applyWingStyle(div, bus.wing);
+
+        if (pendingSaves.has(String(bus.id))) {
+          div.classList.add("pending");
+        }
 
         div.innerHTML = `
           <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
@@ -303,7 +560,7 @@
           </div>
         `;
 
-        const oldStatus = previousStatuses[bus.id];
+        const oldStatus = oldMap[bus.id];
         if (initialized && oldStatus && oldStatus !== bus.status) {
           div.classList.add("flash");
           div.addEventListener("animationend", () => div.classList.remove("flash"));
@@ -320,7 +577,6 @@
       });
     });
 
-    // Drop handling: allow dropping on the column OR on a wing list
     const dropTargets = [
       ...document.querySelectorAll(".column"),
       ...document.querySelectorAll(".wing-buslist")
@@ -330,35 +586,118 @@
       target.ondragover = e => e.preventDefault();
       target.ondrop = async e => {
         e.preventDefault();
+
         const id = e.dataTransfer.getData("text/plain");
-        const bus = buses.find(b => b.id == id);
+        const bus = busesState.find(b => String(b.id) === String(id));
         if (!bus) return;
 
-        // Find the status column we dropped into (even if dropped on wing list)
         const colEl = e.currentTarget.classList.contains("column")
           ? e.currentTarget
           : e.currentTarget.closest(".column");
 
         if (!colEl) return;
 
-        if (bus.status === colEl.id) return;
+        const targetStatus = colEl.id;
+        if (!["Not Here","On Deck","Here","Gone"].includes(targetStatus)) return;
+        if (bus.status === targetStatus) return;
 
-        bus.status = colEl.id;
-        render(buses);
+        bus.status = targetStatus;
+        bus.modified = Date.now();
+        pendingSaves.set(String(bus.id), { desiredStatus: targetStatus, updatedAt: Date.now() });
+
+        render(busesState, previousStatuses);
 
         if (soundEnabled) {
-          if (bus.status === "Here") { dingHere.pause(); dingHere.currentTime=0; dingHere.play().catch(()=>{}); }
-          if (bus.status === "On Deck") { dingOnDeck.pause(); dingOnDeck.currentTime=0; dingOnDeck.play().catch(()=>{}); }
+          if (targetStatus === "Here") {
+            dingHere.pause();
+            dingHere.currentTime = 0;
+            dingHere.play().catch(()=>{});
+          }
+          if (targetStatus === "On Deck") {
+            dingOnDeck.pause();
+            dingOnDeck.currentTime = 0;
+            dingOnDeck.play().catch(()=>{});
+          }
         }
 
-        await updateListItem(bus);
-        await loadListData();
+        await saveBusStatus(bus.id, targetStatus);
       };
     });
   }
 
-  async function updateListItem(bus) {
-    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items(${bus.id})`;
+  /***************
+   * SAVE + RETRY
+   ***************/
+  async function saveBusStatus(busId, status) {
+    if (!accessToken) return;
+    isSaving = true;
+    setStatus("saving", "Saving change to SharePoint…");
+
+    try {
+      await updateListItem(busId, { Status: status });
+
+      pendingSaves.delete(String(busId));
+      offline = false;
+      setStatus("ok", pendingSaves.size ? `${pendingSaves.size} pending change(s) remaining.` : "Saved.");
+      setTimeout(clearStatusIfClean, 1200);
+
+      isSaving = false;
+      await refreshNow(false);
+      return;
+
+    } catch (err) {
+      console.warn("Save failed:", err);
+      offline = true;
+      setStatus("offline", "Offline — change not saved. We’ll retry when connection returns.", true);
+      bumpBackoffOnFailure();
+    } finally {
+      isSaving = false;
+    }
+  }
+
+  async function retryPendingSaves() {
+    if (!accessToken) return;
+    if (pendingSaves.size === 0) return;
+    if (isSaving) return;
+
+    isSaving = true;
+    setStatus("saving", `Retrying ${pendingSaves.size} pending save(s)…`, true);
+
+    try {
+      const entries = Array.from(pendingSaves.entries())
+        .sort((a,b) => (a[1].updatedAt || 0) - (b[1].updatedAt || 0));
+
+      for (const [id, info] of entries) {
+        await updateListItem(id, { Status: info.desiredStatus });
+        pendingSaves.delete(String(id));
+      }
+
+      offline = false;
+      setStatus("ok", "Pending changes saved. Re-synced with SharePoint.");
+      setTimeout(clearStatusIfClean, 1500);
+
+    } catch (err) {
+      console.warn("Retry pending failed:", err);
+      offline = true;
+      setStatus("offline", "Still offline — pending changes not saved yet.", true);
+      bumpBackoffOnFailure();
+    } finally {
+      isSaving = false;
+    }
+  }
+
+  async function manualRetry() {
+    await retryPendingSaves();
+    if (!offline && pendingSaves.size === 0) {
+      await refreshNow(false);
+    }
+  }
+
+  /***************
+   * PATCH
+   ***************/
+  async function updateListItem(id, bodyObj) {
+    const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items(${id})`;
     const response = await fetch(endpoint, {
       method:"PATCH",
       headers:{
@@ -367,21 +706,31 @@
         "Content-Type":"application/json;odata=nometadata",
         "IF-MATCH":"*"
       },
-      body: JSON.stringify({Status: bus.status})
+      body: JSON.stringify(bodyObj)
     });
-    if(!response.ok) console.error("Update failed:", await response.text());
+
+    if (!response.ok) {
+      const txt = await response.text().catch(()=>"(no body)");
+      throw new Error(`Update failed ${response.status}: ${txt}`);
+    }
   }
 
-  setInterval(async ()=>{
-    const account = msalInstance.getActiveAccount();
-    if(account && accessToken) await loadListData();
-  }, 15000);
-
-  /* ✅ SIMPLIFIED RESET BOARD FUNCTION */
+  /***************
+   * RESET
+   ***************/
   resetButton.addEventListener("click", async () => {
     if (!confirm("Are you sure you want to reset all buses to 'Not Here'?")) return;
+
+    if (offline || pendingSaves.size > 0) {
+      const ok = confirm("You appear offline or have pending unsaved changes. Reset may not save. Continue anyway?");
+      if (!ok) return;
+    }
+
     try {
-      showLoading(true);
+      showLoading(true, "Resetting…");
+      isSaving = true;
+      setStatus("saving", "Resetting buses to Not Here…");
+
       const endpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items?$select=Id`;
       const response = await fetch(endpoint, {
         headers: {
@@ -389,33 +738,44 @@
           "Accept": "application/json;odata=nometadata"
         }
       });
-      const data = await response.json();
-      const buses = data.value;
+      if (!response.ok) throw new Error(`SharePoint API error: ${response.status}`);
 
-      for (const bus of buses) {
-        const updateEndpoint = `${siteUrl}/_api/web/lists/GetByTitle('${listName}')/items(${bus.Id})`;
-        const updateResponse = await fetch(updateEndpoint, {
-          method: "PATCH",
-          headers: {
-            "Authorization": `Bearer ${accessToken}`,
-            "Accept": "application/json;odata=nometadata",
-            "Content-Type": "application/json;odata=nometadata",
-            "IF-MATCH": "*"
-          },
-          body: JSON.stringify({ Status: "Not Here" })
-        });
-        if (!updateResponse.ok) console.warn(`Failed to reset bus ${bus.Id}`);
+      const data = await response.json();
+
+      for (const item of data.value) {
+        await updateListItem(item.Id, { Status: "Not Here" });
       }
 
-      alert("✅ All buses have been reset to 'Not Here'.");
-      window.location.reload();
+      pendingSaves.clear();
+      setStatus("ok", "Reset complete.");
+      await refreshNow(false);
+
     } catch (error) {
-      console.error("Error resetting board:", error);
-      alert("❌ Something went wrong while resetting the board. Check console for details.");
+      console.error("Reset failed:", error);
+      offline = true;
+      setStatus("offline", "Reset failed (likely offline). Board may be out of sync.", true);
+      bumpBackoffOnFailure();
     } finally {
+      isSaving = false;
       showLoading(false);
     }
   });
+
+  /***************
+   * ONLINE / OFFLINE EVENTS
+   ***************/
+  window.addEventListener("online", async () => {
+    if (!accessToken) return;
+    setStatus("warn", "Connection restored — syncing…", pendingSaves.size > 0);
+    await refreshNow(false);
+  });
+
+  window.addEventListener("offline", () => {
+    offline = true;
+    setStatus("offline", "No internet connection — showing last known board.", pendingSaves.size > 0);
+  });
+
+  setStatus("warn", "Sign in to load the board.");
   </script>
 </body>
 </html>
